@@ -2,28 +2,42 @@ package zone.amit.tadiranremote
 
 import android.content.SharedPreferences
 
-/** Enum names match the signal names in tadiran-irdb, e.g. `Cool_Auto_24`. */
 enum class Mode { Cool, Heat, Dry, Fan, Auto }
 
 enum class Fan { Low, Mid, High, Auto }
 
 const val MIN_TEMP = 16
 const val MAX_TEMP = 30
-const val OFF_SIGNAL = "Off"
 
 data class AcState(
     val power: Boolean = false,
     val mode: Mode = Mode.Cool,
     val fan: Fan = Fan.Auto,
     val temp: Int = 24,
+    val swing: Boolean = false,
+    val turbo: Boolean = false,
 ) {
-    /** Name of the signal that puts the AC into this state. Every Tadiran code also powers on. */
-    val signalName: String
-        get() = if (power) "${mode.name}_${fan.name}_$temp" else OFF_SIGNAL
-
-    /** SmartIR's dry-mode codes are identical for every fan speed. */
+    /** The remote ignores the fan speed in Dry mode. */
     val fanApplies: Boolean
         get() = mode != Mode.Dry
+
+    /** Fan mode has no Auto speed; the remote sends Low instead. */
+    val autoFanApplies: Boolean
+        get() = mode != Mode.Fan
+
+    /** Turbo ("Max" in IRremoteESP8266) only exists for Cool and Heat. */
+    val turboApplies: Boolean
+        get() = mode == Mode.Cool || mode == Mode.Heat
+
+    fun describe(): String =
+        if (!power) "Off"
+        else listOfNotNull(
+            mode.name,
+            fan.name.takeIf { fanApplies },
+            "${temp}°",
+            "swing".takeIf { swing },
+            "turbo".takeIf { turbo && turboApplies },
+        ).joinToString(" · ")
 
     fun save(prefs: SharedPreferences) {
         prefs.edit()
@@ -31,6 +45,8 @@ data class AcState(
             .putString("mode", mode.name)
             .putString("fan", fan.name)
             .putInt("temp", temp)
+            .putBoolean("swing", swing)
+            .putBoolean("turbo", turbo)
             .apply()
     }
 
@@ -42,6 +58,8 @@ data class AcState(
                 mode = enumOrNull<Mode>(prefs.getString("mode", null)) ?: default.mode,
                 fan = enumOrNull<Fan>(prefs.getString("fan", null)) ?: default.fan,
                 temp = prefs.getInt("temp", default.temp).coerceIn(MIN_TEMP, MAX_TEMP),
+                swing = prefs.getBoolean("swing", default.swing),
+                turbo = prefs.getBoolean("turbo", default.turbo),
             )
         }
 

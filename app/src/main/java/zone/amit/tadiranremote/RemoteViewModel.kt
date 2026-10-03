@@ -1,7 +1,7 @@
 package zone.amit.tadiranremote
 
 import android.app.Application
-import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -14,18 +14,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-const val CODES_ASSET = "Tadiran_1345_full.ir"
-
 /** Rapid taps (e.g. + + +) only send the state they end on. */
 private const val DEBOUNCE_MS = 350L
 
-class RemoteViewModel(app: Application) : AndroidViewModel(app) {
-    private val prefs = app.getSharedPreferences("ac_state", Context.MODE_PRIVATE)
+class RemoteViewModel(app: Application) : AndroidViewModel(app), RemoteActions {
+    private val prefs = AcTimer.prefs(app)
     private val sender = IrSender(app)
-    private val codes = app.assets.open(CODES_ASSET).bufferedReader().use { parseFlipperIr(it.readText()) }
     private var pending: Job? = null
 
     var state by mutableStateOf(AcState.load(prefs))
+        private set
+
+    var timer by mutableStateOf(AcTimer.load(prefs))
         private set
 
     var status by mutableStateOf(if (sender.available) "" else "This phone has no IR emitter")
@@ -37,50 +37,84 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     val hasEmitter: Boolean get() = sender.available
 
-    fun setMode(mode: Mode) = change { it.copy(mode = mode) }
+    // The timer fires in TimerReceiver, possibly while the app is open: pick up its changes.
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { p, key ->
+        state = AcState.load(p)
+        timer = AcTimer.load(p)
+        if (key == AcTimer.KEY_LAST_EVENT) status = p.getString(key, null).orEmpty()
+    }
 
-    fun setFan(fan: Fan) = change { it.copy(fan = fan) }
+    init {
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+    }
 
-    fun stepTemp(delta: Int) = change { it.copy(temp = (it.temp + delta).coerceIn(MIN_TEMP, MAX_TEMP)) }
+    override fun onCleared() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
+    }
 
-    fun togglePower() {
-        state = state.copy(power = !state.power)
-        state.save(prefs)
-        send(debounce = false)
+    override fun setMode(mode: Mode) = change {
+        // Fan mode has no Auto speed.
+        it.copy(mode = mode, fan = if (mode == Mode.Fan && it.fan == Fan.Auto) Fan.Low else it.fan)
+    }
+
+    override fun setFan(fan: Fan) = change { it.copy(fan = fan) }
+
+    override fun stepTemp(delta: Int) = change { it.copy(temp = (it.temp + delta).coerceIn(MIN_TEMP, MAX_TEMP)) }
+
+    override fun setSwing(on: Boolean) = change { it.copy(swing = on) }
+
+    override fun setTurbo(on: Boolean) = change { it.copy(turbo = on) }
+
+    override fun togglePower() {
+        update(state.copy(power = !state.power))
+        send(TadiranProtocol.encode(state), state.describe(), debounce = false)
     }
 
     /** Re-sends the current state, for when the AC was changed by its own remote. */
-    fun resend() = send(debounce = false)
+    override fun resend() = send(TadiranProtocol.encode(state), state.describe(), debounce = false)
+
+    override fun setTimer(minutes: Int, turnOn: Boolean) {
+        val timer = AcTimer(System.currentTimeMillis() + minutes * 60_000L, turnOn)
+        AcTimer.schedule(getApplication(), timer)
+        status = "Timer set: ${timer.describe()}"
+    }
+
+    override fun cancelTimer() {
+        AcTimer.cancel(getApplication())
+        status = "Timer cancelled"
+    }
+
+    /** Sends a hand-edited frame from the lab screen; the checksum is recomputed. */
+    fun sendProbe(frame: ByteArray) {
+        val fixed = TadiranProtocol.withChecksum(frame)
+        send(fixed, TadiranProtocol.hex(fixed), debounce = false)
+    }
 
     private fun change(transform: (AcState) -> AcState) {
         val next = transform(state)
         if (next == state) return
-        state = next
-        state.save(prefs)
-        if (state.power) send(debounce = true)
+        update(next)
+        if (state.power) send(TadiranProtocol.encode(state), state.describe(), debounce = true)
     }
 
-    private fun send(debounce: Boolean) {
+    private fun update(next: AcState) {
+        state = next
+        state.save(prefs)
+    }
+
+    private fun send(frame: ByteArray, label: String, debounce: Boolean) {
         pending?.cancel()
-        val target = state
         pending = viewModelScope.launch {
             if (debounce) delay(DEBOUNCE_MS)
-            val signal = codes[target.signalName]
-            status = when {
-                !sender.available -> "This phone has no IR emitter"
-                signal == null -> "No code for ${target.signalName}"
-                else -> try {
-                    withContext(Dispatchers.IO) { sender.send(signal) }
-                    sentCount++
-                    "Sent: ${describe(target)}"
-                } catch (e: Exception) {
-                    "Send failed: ${e.message}"
-                }
+            status = if (!sender.available) {
+                "This phone has no IR emitter"
+            } else try {
+                withContext(Dispatchers.IO) { sender.send(frame) }
+                sentCount++
+                "Sent: $label"
+            } catch (e: Exception) {
+                "Send failed: ${e.message}"
             }
         }
     }
-
-    private fun describe(s: AcState): String =
-        if (!s.power) "Off"
-        else listOfNotNull(s.mode.name, s.fan.name.takeIf { s.fanApplies }, "${s.temp}°").joinToString(" · ")
 }

@@ -5,7 +5,7 @@ class IrSignal(val frequency: Int, val pattern: IntArray)
 
 /**
  * Parses the raw signals of a Flipper "IR signals file" into a name -> signal map.
- * Only `type: raw` signals are supported; that is all tadiran-irdb contains.
+ * Only `type: raw` signals are supported; that is all the SmartIR fixture contains.
  */
 fun parseFlipperIr(text: String): Map<String, IrSignal> {
     val signals = LinkedHashMap<String, IrSignal>()

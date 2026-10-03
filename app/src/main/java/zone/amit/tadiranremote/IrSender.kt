@@ -9,8 +9,11 @@ class IrSender(context: Context) {
     val available: Boolean
         get() = ir?.hasIrEmitter() == true
 
-    /** Blocks until the pattern has been sent; call off the main thread. */
-    fun send(signal: IrSignal) {
-        checkNotNull(ir) { "No IR emitter" }.transmit(signal.frequency, signal.pattern)
+    /** Sends one Tadiran frame. Blocks until done; call off the main thread. */
+    fun send(frame: ByteArray) {
+        checkNotNull(ir) { "No IR emitter" }
+            .transmit(TadiranProtocol.FREQUENCY, TadiranProtocol.timings(frame))
     }
+
+    fun send(state: AcState) = send(TadiranProtocol.encode(state))
 }

@@ -7,6 +7,26 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -90,8 +110,21 @@ fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
+/** What the remote screen can ask for; implemented by [RemoteViewModel]. */
+interface RemoteActions {
+    fun setMode(mode: Mode)
+    fun setFan(fan: Fan)
+    fun stepTemp(delta: Int)
+    fun setSwing(on: Boolean)
+    fun setTurbo(on: Boolean)
+    fun togglePower()
+    fun resend()
+    fun setTimer(minutes: Int, turnOn: Boolean)
+    fun cancelTimer()
+}
+
 @Composable
-fun RemoteScreen(vm: RemoteViewModel) {
+fun RemoteScreen(vm: RemoteViewModel, onOpenLab: () -> Unit) {
     val view = LocalView.current
     LaunchedEffect(vm.sentCount) {
         if (vm.sentCount > 0) {
@@ -101,31 +134,22 @@ fun RemoteScreen(vm: RemoteViewModel) {
             )
         }
     }
-    RemoteContent(
-        state = vm.state,
-        status = vm.status,
-        statusIsError = !vm.hasEmitter,
-        onMode = vm::setMode,
-        onFan = vm::setFan,
-        onStep = vm::stepTemp,
-        onPower = vm::togglePower,
-        onResend = vm::resend,
-    )
+    RemoteContent(vm.state, vm.timer, vm.status, statusIsError = !vm.hasEmitter, vm, onOpenLab)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RemoteContent(
     state: AcState,
+    timer: AcTimer?,
     status: String,
     statusIsError: Boolean,
-    onMode: (Mode) -> Unit,
-    onFan: (Fan) -> Unit,
-    onStep: (Int) -> Unit,
-    onPower: () -> Unit,
-    onResend: () -> Unit,
+    actions: RemoteActions,
+    onOpenLab: () -> Unit,
 ) {
     val idle = MaterialTheme.colorScheme.outline
     val accent by animateColorAsState(if (state.power) state.mode.color() else idle, label = "accent")
+    var timerSheet by remember { mutableStateOf(false) }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Box(
@@ -140,21 +164,30 @@ fun RemoteContent(
                 .padding(horizontal = 20.dp, vertical = 16.dp)
         ) {
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    "Tadiran AC",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    if (state.power) "On" else "Off",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Tadiran AC",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (state.power) "On" else "Off",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = onOpenLab) {
+                        Icon(
+                            Icons.Outlined.Science,
+                            contentDescription = "Lab",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
 
                 Spacer(Modifier.weight(1f))
-                TemperatureDial(state, accent, onStep = onStep)
+                TemperatureDial(state, accent, onStep = actions::stepTemp)
                 Spacer(Modifier.weight(1f))
 
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -163,7 +196,7 @@ fun RemoteContent(
                             mode = mode,
                             selected = mode == state.mode,
                             accent = if (state.power) mode.color() else idle,
-                            onClick = { onMode(mode) },
+                            onClick = { actions.setMode(mode) },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -180,8 +213,8 @@ fun RemoteContent(
                     Fan.entries.forEachIndexed { i, fan ->
                         SegmentedButton(
                             selected = fan == state.fan && state.fanApplies,
-                            onClick = { onFan(fan) },
-                            enabled = state.fanApplies,
+                            onClick = { actions.setFan(fan) },
+                            enabled = state.fanApplies && (fan != Fan.Auto || state.autoFanApplies),
                             shape = SegmentedButtonDefaults.itemShape(i, Fan.entries.size),
                             colors = SegmentedButtonDefaults.colors(
                                 activeContainerColor = accent.copy(alpha = 0.25f),
@@ -191,17 +224,159 @@ fun RemoteContent(
                     }
                 }
 
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FeatureChip("Swing", Icons.Filled.SwapVert, state.swing, enabled = true, accent) {
+                        actions.setSwing(!state.swing)
+                    }
+                    FeatureChip("Turbo", Icons.Filled.Bolt, state.turbo && state.turboApplies, state.turboApplies, accent) {
+                        actions.setTurbo(!state.turbo)
+                    }
+                    Text(
+                        "experimental",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
                 Spacer(Modifier.weight(1f))
-                PowerButton(state.power, accent, onClick = onPower, onLongClick = onResend)
+                if (timer != null) {
+                    InputChip(
+                        selected = true,
+                        onClick = { timerSheet = true },
+                        label = { Text(timer.describe()) },
+                        leadingIcon = { Icon(Icons.Filled.Timer, null, Modifier.size(18.dp)) },
+                        trailingIcon = {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Cancel timer",
+                                modifier = Modifier.size(18.dp).clickable { actions.cancelTimer() },
+                            )
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RoundIconButton(Icons.Filled.Timer, "Timer", accent) { timerSheet = true }
+                    PowerButton(state.power, accent, onClick = actions::togglePower, onLongClick = actions::resend)
+                    RoundIconButton(Icons.Filled.Refresh, "Resend", accent, onClick = actions::resend)
+                }
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    status.ifEmpty { "Long-press power to resend" },
+                    status.ifEmpty { "Point the phone at the AC" },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (statusIsError) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
+    }
+
+    if (timerSheet) {
+        TimerSheet(
+            timer = timer,
+            powerIsOn = state.power,
+            onSet = { minutes, turnOn -> actions.setTimer(minutes, turnOn); timerSheet = false },
+            onCancel = { actions.cancelTimer(); timerSheet = false },
+            onDismiss = { timerSheet = false },
+        )
+    }
+}
+
+private val TIMER_PRESETS = listOf(15, 30, 60, 90, 120, 180, 240, 360, 480)
+
+private fun formatMinutes(m: Int): String = when {
+    m < 60 -> "$m min"
+    m % 60 == 0 -> "${m / 60} h"
+    else -> "${m / 60}.${m % 60 * 10 / 60} h"
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun TimerSheet(
+    timer: AcTimer?,
+    powerIsOn: Boolean,
+    onSet: (minutes: Int, turnOn: Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var turnOn by remember { mutableStateOf(!powerIsOn) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
+            Text("Timer", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "The phone sends the code at that time, so leave it facing the AC.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+            )
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                listOf(false to "Turn off", true to "Turn on").forEachIndexed { i, (on, label) ->
+                    SegmentedButton(
+                        selected = turnOn == on,
+                        onClick = { turnOn = on },
+                        shape = SegmentedButtonDefaults.itemShape(i, 2),
+                        label = { Text(label) },
+                    )
+                }
+            }
+            Text(
+                "in",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TIMER_PRESETS.forEach { m ->
+                    FilledTonalButton(onClick = { onSet(m, turnOn) }) { Text(formatMinutes(m)) }
+                }
+            }
+            if (timer != null) {
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = onCancel) { Text("Cancel timer (${timer.describe()})") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeatureChip(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    enabled: Boolean,
+    accent: Color,
+    onClick: () -> Unit,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, null, Modifier.size(18.dp)) },
+        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = accent.copy(alpha = 0.25f)),
+    )
+}
+
+@Composable
+private fun RoundIconButton(icon: ImageVector, label: String, accent: Color, onClick: () -> Unit) {
+    FilledTonalIconButton(
+        onClick = onClick,
+        colors = IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = accent.copy(alpha = 0.16f),
+            contentColor = accent,
+        ),
+        modifier = Modifier.size(56.dp),
+    ) {
+        Icon(icon, contentDescription = label)
     }
 }
 
