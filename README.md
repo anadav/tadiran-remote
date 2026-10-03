@@ -20,7 +20,8 @@ end on.
   Auto. In Dry mode the fan selector is disabled, and Fan mode has no Auto speed, because
   the real remote behaves that way.
 - **Swing** and **Turbo** are *experimental*. Their bits come from other Tadiran and Amcor
-  projects, and haven't been confirmed on a TAC 297 unit.
+  projects. On the TAC 297 unit they were tested on, the AC accepts them (it beeps), but
+  they have no visible effect.
 - **Timer:** turn the AC off or on in 15 minutes to 8 hours. The *phone* sends the code at
   that time, so leave it facing the AC. It uses an alarm-clock alarm (the alarm icon shows
   in the status bar), and it is re-scheduled after a reboot. On Xiaomi phones, allow

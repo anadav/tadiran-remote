@@ -15,6 +15,10 @@ package zone.amit.tadiranremote
  *   6  swing (bits 6-7) | turbo (bits 0-1)
  *   7  sum of the nibbles of bytes 0-6
  *
+ * Observed on a TAC 297 unit (2026-10): swing and turbo frames are accepted (the AC
+ * beeps) but change nothing; flipping single bits in bytes 3-5 changes nothing visible
+ * (no timer); a frame with byte 6 bits 4 and 5 both set is ignored.
+ *
  * Timings are the medians of the SmartIR captures of the real remote.
  */
 object TadiranProtocol {
